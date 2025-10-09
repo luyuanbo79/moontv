@@ -332,3 +332,7 @@ MoonTV 支持标准的苹果 CMS V10 API 格式。
 ## Star 趋势
 
 [![Stargazers over time](https://starchart.cc/LunaTechLab/MoonTV.svg?variant=adaptive)](https://starchart.cc/LunaTechLab/MoonTV)
+
+
+
+[![Powered by DartNode](https://dartnode.com/branding/DN-Open-Source-sm.png)](https://dartnode.com "Powered by DartNode - Free VPS for Open Source")
