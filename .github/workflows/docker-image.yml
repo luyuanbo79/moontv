@@ -1,4 +1,4 @@
-name: Build & Push Docker image (All Linux Architectures)
+name: Build & Push Docker image (All Architectures)
 
 on:
   push:
@@ -26,8 +26,8 @@ jobs:
   build:
     strategy:
       matrix:
-        # 支持所有常见Linux架构（含ARM全版本、386、PowerPC等）
-        platform: 
+        # 覆盖Docker所有官方支持的Linux架构（含ARM全版本、386、PowerPC等）
+        platform:
           - linux/amd64
           - linux/arm64
           - linux/arm/v7
@@ -35,19 +35,24 @@ jobs:
           - linux/386
           - linux/ppc64le
           - linux/s390x
-        os: [ubuntu-latest]  # 统一使用ubuntu-latest，通过QEMU模拟多架构
+          - linux/riscv64
+          - linux/mips64le
+          - linux/mipsle
+        os: [ubuntu-latest]  # 统一使用ubuntu-latest，通过QEMU模拟非原生架构
     runs-on: ${{ matrix.os }}
 
     steps:
       - name: Prepare platform name (replace / with -)
         run: |
-          echo "PLATFORM_NAME=${{ matrix.platform }}" | sed 's|/|-|g; s|v/|v|g' >> $GITHUB_ENV
+          # 处理带版本号的架构（如arm/v7 → arm-v7），避免文件名非法
+          PLATFORM_CLEAN=$(echo "${{ matrix.platform }}" | sed 's|/|-|g; s|v-|v|g')
+          echo "PLATFORM_NAME=$PLATFORM_CLEAN" >> $GITHUB_ENV
 
       - name: Checkout source code
         uses: actions/checkout@v4
 
-      - name: Set up QEMU (for multi-arch emulation)
-        uses: docker/setup-qemu-action@v3  # 新增：启用跨架构模拟
+      - name: Set up QEMU (跨架构模拟)
+        uses: docker/setup-qemu-action@v3  # 关键：启用非x86架构的模拟构建
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -73,9 +78,9 @@ jobs:
           tags: |
             type=ref,event=pr
             type=raw,value=latest,enable={{is_default_branch}}
-            type=sha,format=short  # 新增：添加commit-sha标签，便于版本追踪
+            type=sha,format=short  # 新增commit-sha标签，便于版本追踪
 
-      - name: Build and push by digest (multi-arch)
+      - name: Build and push by digest (全架构)
         id: build
         uses: docker/build-push-action@v5
         with:
@@ -86,7 +91,7 @@ jobs:
           outputs: type=image,name=ghcr.io/${{ steps.lowercase.outputs.owner }}/moontv,push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
           provenance: false  # 禁用溯源（部分架构不支持）
           cache-from: type=gha  # 启用GitHub Actions缓存，加速构建
-          cache-to: type=gha,mode=max
+          cache-to: type=gha,mode=max  # 最大化缓存复用
 
       - name: Export digest
         run: |
@@ -141,7 +146,7 @@ jobs:
       - name: Create multi-arch manifest list and push
         working-directory: /tmp/digests
         run: |
-          # 收集所有架构的digest，生成manifest list
+          # 收集所有架构的digest，生成统一manifest list
           DIGESTS=$(find . -type f -print0 | xargs -0 -I {} echo "ghcr.io/${{ steps.lowercase.outputs.owner }}/moontv@sha256:$(basename {})")
           docker buildx imagetools create \
             $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
@@ -150,7 +155,7 @@ jobs:
       - name: Inspect multi-arch image
         run: |
           docker buildx imagetools inspect ghcr.io/${{ steps.lowercase.outputs.owner }}/moontv:latest
-          echo "✅ Multi-arch image manifest created successfully!"
+          echo "✅ 全架构镜像构建完成！支持的架构：$(docker buildx imagetools inspect ghcr.io/${{ steps.lowercase.outputs.owner }}/moontv:latest | grep -oP 'Platforms:\s+\K.*')"
 
   cleanup:
     runs-on: ubuntu-latest
