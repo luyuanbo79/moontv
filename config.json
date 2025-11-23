@@ -140,6 +140,18 @@
     "pubu": {
       "api": "https://dh.ha.cn/api.php/provide/vod/at/josn",
       "name": "瀑布"
+    },
+    "zuidapi": {
+      "api": "https://api.zuidapi.com/api.php/provide/vod",
+      "name": "zuidapi"
+    },
+    "jinchancaiji": {
+      "api": "https://zy.jinchancaiji.com/api.php/provide/vod",
+   "name": "jinchancaiji"
+    },
+    "jyzyapo": {
+      "api": "https://jyzyapi.com/provide/vod/from/jinyingm3u8/at/json",
+      "name": "jyzyapi"
     }
   }
 }
