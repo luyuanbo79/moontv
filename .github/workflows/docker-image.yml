@@ -1,4 +1,4 @@
-name: Build & Push Docker image (All Architectures)
+name: Build & Push Multi-arch Docker image
 
 on:
   push:
@@ -26,38 +26,31 @@ jobs:
   build:
     strategy:
       matrix:
-        # 覆盖Docker所有官方支持的Linux架构（含ARM全版本、386、PowerPC等）
-        platform:
-          - linux/amd64
-          - linux/arm64
-          - linux/arm/v7
-          - linux/arm/v6
-          - linux/386
-          - linux/ppc64le
-          - linux/s390x
-          - linux/riscv64
-          - linux/mips64le
-          - linux/mipsle
-        os: [ubuntu-latest]  # 统一使用ubuntu-latest，通过QEMU模拟非原生架构
+        include:
+          - platform: linux/amd64
+            os: ubuntu-latest
+          - platform: linux/arm64
+            os: ubuntu-24.04-arm
+          - platform: linux/arm/v7
+            os: ubuntu-24.04-arm
+          - platform: linux/ppc64le
+            os: ubuntu-latest
+          - platform: linux/s390x
+            os: ubuntu-latest
     runs-on: ${{ matrix.os }}
 
     steps:
-      - name: Prepare platform name (replace / with -)
+      - name: Prepare platform name
         run: |
-          # 处理带版本号的架构（如arm/v7 → arm-v7），避免文件名非法
-          PLATFORM_CLEAN=$(echo "${{ matrix.platform }}" | sed 's|/|-|g; s|v-|v|g')
-          echo "PLATFORM_NAME=$PLATFORM_CLEAN" >> $GITHUB_ENV
+          echo "PLATFORM_NAME=${{ matrix.platform }}" | sed 's|/|-|g' | sed 's|/|-|g' >> $GITHUB_ENV
 
       - name: Checkout source code
         uses: actions/checkout@v4
 
-      - name: Set up QEMU (跨架构模拟)
-        uses: docker/setup-qemu-action@v3  # 关键：启用非x86架构的模拟构建
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
-          driver-opts: --allow-insecure-entitlement security.insecure  # 适配部分架构构建权限
+          install: true
 
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
@@ -78,9 +71,8 @@ jobs:
           tags: |
             type=ref,event=pr
             type=raw,value=latest,enable={{is_default_branch}}
-            type=sha,format=short  # 新增commit-sha标签，便于版本追踪
 
-      - name: Build and push by digest (全架构)
+      - name: Build and push by digest
         id: build
         uses: docker/build-push-action@v5
         with:
@@ -89,9 +81,8 @@ jobs:
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
           outputs: type=image,name=ghcr.io/${{ steps.lowercase.outputs.owner }}/moontv,push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
-          provenance: false  # 禁用溯源（部分架构不支持）
-          cache-from: type=gha  # 启用GitHub Actions缓存，加速构建
-          cache-to: type=gha,mode=max  # 最大化缓存复用
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Export digest
         run: |
@@ -109,10 +100,11 @@ jobs:
 
   merge:
     runs-on: ubuntu-latest
-    needs: build
+    needs:
+      - build
     if: github.event_name != 'pull_request'
     steps:
-      - name: Download all architecture digests
+      - name: Download digests
         uses: actions/download-artifact@v4
         with:
           path: /tmp/digests
@@ -133,36 +125,35 @@ jobs:
         id: lowercase
         run: echo "owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
 
-      - name: Extract metadata for manifest
+      - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ steps.lowercase.outputs.owner }}/moontv
           tags: |
             type=ref,event=branch
-            type=sha,format=short
+            type=ref,event=pr
+            type=sha
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Create multi-arch manifest list and push
+      - name: Create manifest list and push
         working-directory: /tmp/digests
         run: |
-          # 收集所有架构的digest，生成统一manifest list
-          DIGESTS=$(find . -type f -print0 | xargs -0 -I {} echo "ghcr.io/${{ steps.lowercase.outputs.owner }}/moontv@sha256:$(basename {})")
-          docker buildx imagetools create \
-            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $DIGESTS
+          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf 'ghcr.io/${{ steps.lowercase.outputs.owner }}/moontv@sha256:%s ' *)
 
-      - name: Inspect multi-arch image
+      - name: Inspect image
         run: |
-          docker buildx imagetools inspect ghcr.io/${{ steps.lowercase.outputs.owner }}/moontv:latest
-          echo "✅ 全架构镜像构建完成！支持的架构：$(docker buildx imagetools inspect ghcr.io/${{ steps.lowercase.outputs.owner }}/moontv:latest | grep -oP 'Platforms:\s+\K.*')"
+          docker buildx imagetools inspect ghcr.io/${{ steps.lowercase.outputs.owner }}/moontv:${{ steps.meta.outputs.version }}
 
+  # 后续的 cleanup 和 version-cache-refresh 作业保持不变
   cleanup:
     runs-on: ubuntu-latest
-    needs: merge
+    needs:
+      - merge
     if: always() && github.event_name != 'pull_request'
     steps:
-      - name: Delete old workflow runs
+      - name: Delete workflow runs
         uses: Mattraks/delete-workflow-runs@main
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -172,11 +163,13 @@ jobs:
 
   version-cache-refresh:
     runs-on: ubuntu-latest
-    needs: cleanup
+    needs:
+      - cleanup
     if: always() && github.event_name != 'pull_request'
     steps:
-      - name: Refresh VERSION.txt CDN cache
+      - name: Refresh VERSION.txt cache
         run: |
           echo "Refreshing VERSION.txt cache..."
           curl -s https://purge.jsdelivr.net/gh/LunaTechLab/moontv/VERSION.txt
-          echo -e "\n✅ VERSION.txt cache refreshed successfully"
+          echo ""
+          echo "VERSION.txt cache refreshed successfully"
